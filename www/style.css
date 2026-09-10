@@ -48,6 +48,7 @@ html, body {
 }
 
 .overlay[hidden] { display: none !important; }
+#loadingScreen { background: #0a2e1a; z-index: 6; }
 
 .overlay h1 {
   font-size: clamp(28px, 6vw, 56px);

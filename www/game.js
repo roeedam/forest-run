@@ -50,6 +50,12 @@
     plant_blink: seq('assets/obstacles/plant/blink/blink_', 8),
     plant_eat: seq('assets/obstacles/plant/eat/eat_', 41),
     plant_step: seq('assets/obstacles/plant/step/step_', 10),
+    // title screen
+    title_bg: ['assets/title/title_bg.jpg'],
+    title_blue: seq('assets/title/blue/f', 30),
+    title_red: seq('assets/title/red/f', 30),
+    c1_fly: ['assets/title/c1_fly.png'],
+    c2_fly: ['assets/title/c2_fly_temp.png'],
   };
 
   let totalCount = 0, loadedCount = 0;
@@ -140,7 +146,8 @@
   }
 
   // ---------- UI wiring ----------
-  const menuScreen = document.getElementById('menuScreen');
+  const loadingScreen = document.getElementById('loadingScreen');
+  const loadingText = document.getElementById('loadingText');
   const pauseScreen = document.getElementById('pauseScreen');
   const gameOverScreen = document.getElementById('gameOverScreen');
   const hud = document.getElementById('hud');
@@ -151,25 +158,63 @@
   const tarotPill = document.getElementById('tarotPill');
   const finalScoreEl = document.getElementById('finalScore');
   const tarotNoteEl = document.getElementById('tarotNote');
-  const startBtn = document.getElementById('startBtn');
 
-  document.querySelectorAll('.charBtn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.charBtn').forEach(b => b.classList.remove('selected'));
-      btn.classList.add('selected');
-      chosenChar = btn.dataset.char;
-    });
-  });
-
-  startBtn.addEventListener('click', () => startGame());
-  document.getElementById('retryBtn').addEventListener('click', () => startGame());
+  document.getElementById('retryBtn').addEventListener('click', () => goToMenu());
   document.getElementById('resumeBtn').addEventListener('click', () => togglePause());
   document.getElementById('pauseBtn').addEventListener('click', () => togglePause());
+
+  // ---------- title screen (flower select + spit animation) ----------
+  // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned
+  // to align with the flower buds already painted into title_bg.jpg (measured from the source art).
+  const FLOWER = {
+    c1: { frames: 'title_blue', ox: -21, oy: 44, w: 657, h: 563, tapX: 246, tapY: 358, fly: 'c1_fly' },
+    c2: { frames: 'title_red', ox: 25, oy: 37, w: 821, h: 704, tapX: 388, tapY: 424, fly: 'c2_fly' },
+  };
+  const TAP_RADIUS = 100;
+  const SPIT_FRAME_TIME = 1 / 24; // 24fps swing
+  const SPIT_PEAK_FRAME = 11; // matches the whip-crack peak in the source animation
+  const SPIT_TOTAL_FRAMES = 30;
+
+  let spitChar = null;   // 'c1' | 'c2' while playing the spit-out animation
+  let spitFrame = 0;
+  let spitTimer = 0;
+
+  function goToMenu() {
+    state = 'menu';
+    spitChar = null; spitFrame = 0; spitTimer = 0;
+    gameOverScreen.hidden = true;
+    pauseScreen.hidden = true;
+    hud.hidden = true;
+    touchZones.hidden = true;
+    hint.hidden = true;
+  }
+
+  function canvasPointFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = W / rect.width, sy = H / rect.height;
+    return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy };
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (state !== 'menu') return;
+    const p = canvasPointFromEvent(e);
+    for (const key of ['c1', 'c2']) {
+      const f = FLOWER[key];
+      const dx = p.x - f.tapX, dy = p.y - f.tapY;
+      if (dx * dx + dy * dy <= TAP_RADIUS * TAP_RADIUS) {
+        chosenChar = key;
+        spitChar = key;
+        spitFrame = 0;
+        spitTimer = 0;
+        state = 'spit';
+        return;
+      }
+    }
+  });
 
   function startGame() {
     resetRun();
     state = 'playing';
-    menuScreen.hidden = true;
     gameOverScreen.hidden = true;
     pauseScreen.hidden = true;
     hud.hidden = false;
@@ -382,6 +427,17 @@
     if (state === 'playing' && hearts <= 0) { /* safety */ }
   }
 
+  function updateSpit(dt) {
+    spitTimer += dt;
+    if (spitTimer >= SPIT_FRAME_TIME) {
+      spitTimer = 0;
+      spitFrame++;
+      if (spitFrame >= SPIT_TOTAL_FRAMES) {
+        startGame();
+      }
+    }
+  }
+
   function updateDead(dt) {
     player.deadTimer += dt;
     const arr = images[chosenChar + '_dead'];
@@ -406,8 +462,61 @@
     ctx.globalAlpha = 1;
   }
 
+  function drawFlowerFrame(key, frameIdx) {
+    const f = FLOWER[key];
+    const arr = images[f.frames];
+    const img = arr[Math.min(frameIdx, arr.length - 1)];
+    if (img && img.complete) ctx.drawImage(img, f.ox, f.oy, f.w, f.h);
+  }
+
+  function renderTitle() {
+    const bg = images.title_bg[0];
+    if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
+
+    // idle flowers (both closed, resting pose = frame 0) unless one is mid-spit
+    drawFlowerFrame('c1', spitChar === 'c1' ? spitFrame : 0);
+    drawFlowerFrame('c2', spitChar === 'c2' ? spitFrame : 0);
+
+    // character launching out of the flower at the whip-crack peak of the swing
+    if (spitChar && spitFrame >= SPIT_PEAK_FRAME) {
+      const f = FLOWER[spitChar];
+      const t = Math.min(1, (spitFrame - SPIT_PEAK_FRAME) / (SPIT_TOTAL_FRAMES - SPIT_PEAK_FRAME));
+      const startX = f.tapX, startY = f.tapY - 40;
+      const endX = W * 0.5, endY = H * 0.28;
+      const x = startX + (endX - startX) * t;
+      const y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 70;
+      const img = images[f.fly][0];
+      if (img && img.complete) {
+        const targetW = 90 + t * 40;
+        const targetH = targetW * (img.naturalHeight / img.naturalWidth);
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, t * 3);
+        ctx.drawImage(img, x - targetW / 2, y - targetH / 2, targetW, targetH);
+        ctx.restore();
+      }
+    }
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe066';
+    ctx.strokeStyle = 'rgba(10,40,25,0.55)';
+    ctx.lineWidth = 6;
+    ctx.font = "54px 'LuckiestGuy'";
+    ctx.strokeText('FOREST RUN', W / 2, 78);
+    ctx.fillText('FOREST RUN', W / 2, 78);
+    if (state === 'menu') {
+      ctx.font = "18px 'LuckiestGuy'";
+      ctx.fillStyle = '#fff';
+      ctx.lineWidth = 4;
+      ctx.strokeText('TAP A FLOWER TO START', W / 2, H - 26);
+      ctx.fillText('TAP A FLOWER TO START', W / 2, H - 26);
+    }
+    ctx.restore();
+  }
+
   function render() {
     ctx.clearRect(0, 0, W, H);
+    if (state === 'menu' || state === 'spit') { renderTitle(); return; }
     // sky
     if (images.sky[0].complete) ctx.drawImage(images.sky[0], 0, 0, W, H);
     // parallax layers
@@ -490,17 +599,17 @@
     last = now;
     if (state === 'playing') update(dt);
     if (state === 'dead') updateDead(dt);
-    if (state === 'playing' || state === 'dead' || state === 'paused') render();
+    if (state === 'spit') updateSpit(dt);
+    render();
     requestAnimationFrame(loop);
   }
 
   loadAll(() => {
-    startBtn.disabled = false;
-    startBtn.textContent = 'Play';
+    loadingScreen.hidden = true;
+    state = 'menu';
     requestAnimationFrame(loop);
   });
-  startBtn.disabled = true;
-  startBtn.textContent = 'Loading...';
+  loadingText.textContent = 'Loading...';
 
   window.__debug = () => ({ state, hearts, coins, tarotThisRun, obstacles: obstacles.length, elapsed });
 })();
