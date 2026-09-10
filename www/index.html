@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Forest Run</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+  <div id="hud" hidden>
+    <div class="hudPill"><img src="assets/hud/coin.png" alt="coin"><span id="coinCount">0</span></div>
+    <div class="hudPill hearts" id="heartsPill"></div>
+    <div class="hudPill" id="tarotPill" hidden><img src="assets/hud/card.png" alt="card"><span>1</span></div>
+    <button id="pauseBtn"><img src="assets/hud/pause.png" alt="pause"></button>
+  </div>
+
+  <div id="touchZones" hidden>
+    <div class="zone" id="zoneDuck"></div>
+    <div class="zone" id="zoneJump"></div>
+  </div>
+
+  <div class="overlay" id="menuScreen">
+    <h1>FOREST RUN</h1>
+    <div class="charRow">
+      <button class="charBtn selected" data-char="c1"><img src="assets/c1/run_01.png" alt="Elfi"></button>
+      <button class="charBtn" data-char="c2"><img src="assets/c2/run_01.png" alt="Lyra"></button>
+    </div>
+    <button class="bigBtn" id="startBtn">Play</button>
+    <div class="subtext">Space / Tap right = Jump &nbsp;|&nbsp; Down / Tap left = Duck</div>
+  </div>
+
+  <div class="overlay" id="pauseScreen" hidden>
+    <img src="assets/hud/pausetext.png" alt="Paused" style="width:min(220px,40vw)">
+    <button class="bigBtn" id="resumeBtn">Resume</button>
+  </div>
+
+  <div class="overlay" id="gameOverScreen" hidden>
+    <h1>Game Over</h1>
+    <div class="subtext" id="finalScore" style="font-size:22px;color:#ffe066"></div>
+    <div class="subtext" id="tarotNote" hidden>You found a Tarot Card this run!</div>
+    <button class="bigBtn" id="retryBtn">Try Again</button>
+  </div>
+
+  <div id="hint" hidden>SPACE = jump &nbsp; ↓ = duck &nbsp; P = pause</div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
