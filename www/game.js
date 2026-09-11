@@ -31,6 +31,7 @@
     hud_coin: ['assets/hud/coin.png'],
     hud_heart: ['assets/hud/heart.png'],
     hud_card: ['assets/hud/card.png'],
+    hud_pause: ['assets/hud/pause.png'],
     // tarot
     tarot: ['assets/tarot/tarot.png'],
     // bg
@@ -39,14 +40,18 @@
     frontback: ['assets/bg/frontback.png'],
     ground: ['assets/bg/ground.png'],
     deco: ['assets/bg/bush002.png', 'assets/bg/bush003.png', 'assets/bg/bush004.png', 'assets/bg/bush005.png',
-           'assets/bg/mushroom001.png', 'assets/bg/mushroom005.png', 'assets/bg/mushroom009.png',
-           'assets/bg/pumpkin3.png', 'assets/bg/pumpkin5.png'],
+           'assets/bg/mushroom001.png', 'assets/bg/mushroom002.png', 'assets/bg/mushroom003.png',
+           'assets/bg/mushroom004.png', 'assets/bg/mushroom005.png', 'assets/bg/mushroom007.png',
+           'assets/bg/mushroom008.png', 'assets/bg/mushroom009.png',
+           'assets/bg/pumpkin1.png', 'assets/bg/pumpkin2.png', 'assets/bg/pumpkin3.png',
+           'assets/bg/pumpkin4.png', 'assets/bg/pumpkin5.png'],
     // obstacles
     rock1: ['assets/obstacles/rocks/rock_01.png'],
     rock2: ['assets/obstacles/rocks/rock_02.png'],
     rock3: ['assets/obstacles/rocks/rock_03.png'],
     tomato: ['assets/obstacles/tomato.png'],
     hole: ['assets/obstacles/hole.png'],
+    hang_rock: ['assets/obstacles/rocks/rock_02.png'],
     plant_blink: seq('assets/obstacles/plant/blink/blink_', 8),
     plant_eat: seq('assets/obstacles/plant/eat/eat_', 41),
     plant_step: seq('assets/obstacles/plant/step/step_', 10),
@@ -114,6 +119,11 @@
         // swipe down -> duck for a short moment
         touchDuckTimer = 0.45;
       }
+    } else if (state === 'playing') {
+      // not a swipe - a plain tap. If it landed on the HUD pause icon, pause.
+      const p = canvasPointFromEvent(e);
+      const ddx = p.x - HUD.pause.cx, ddy = p.y - HUD.pause.cy;
+      if (ddx * ddx + ddy * ddy <= 34 * 34) togglePause();
     }
   });
   touchZonesEl.addEventListener('pointercancel', () => { swipeActive = false; });
@@ -129,6 +139,7 @@
   let speed = 300;
   let elapsed = 0;
   let coins = 0;
+  let score = 0;
   let hearts = 3;
   let tarotThisRun = 0;
   let invuln = 0;
@@ -153,21 +164,30 @@
   let coinSpawnTimer = 0;
   let tarotCooldown = 8; // seconds before first possible tarot
 
+  // Ground obstacles: must be jumped over (or, for the hole, jumped across).
+  // hang_rock is a low-hanging obstacle mounted near the top of the screen -
+  // jumping into it hits it, only ducking clears it, so the run actually needs both inputs.
   const OBST_DEFS = {
-    rock1: { img: 'rock1', w: 70, h: 62, gap: true },
-    rock2: { img: 'rock2', w: 78, h: 66, gap: true },
-    rock3: { img: 'rock3', w: 86, h: 74, gap: true },
-    tomato: { img: 'tomato', w: 58, h: 58, gap: true },
-    hole: { img: 'hole', w: 110, h: 20, gap: true, isHole: true },
-    plant: { img: 'plant_blink', w: 84, h: 84, gap: true, isPlant: true },
+    rock1: { img: 'rock1', w: 70, h: 62, gap: true, duck: false },
+    rock2: { img: 'rock2', w: 78, h: 66, gap: true, duck: false },
+    rock3: { img: 'rock3', w: 86, h: 74, gap: true, duck: false },
+    tomato: { img: 'tomato', w: 58, h: 58, gap: true, duck: false },
+    hole: { img: 'hole', w: 110, h: 20, gap: true, isHole: true, duck: false },
+    plant: { img: 'plant_blink', w: 84, h: 84, gap: true, isPlant: true, duck: false },
+    hang_rock: { img: 'hang_rock', w: 84, h: 96, gap: true, isOverhead: true, duck: true, clearBottom: 392 },
   };
+  const JUMP_TYPES = Object.keys(OBST_DEFS).filter(k => !OBST_DEFS[k].duck);
+  const DUCK_TYPES = Object.keys(OBST_DEFS).filter(k => OBST_DEFS[k].duck);
+
+  let sinceDuckObstacle = 0; // spawns since the last duck-required obstacle - forces variety
 
   function resetRun() {
-    scroll = 0; speed = 300; elapsed = 0; coins = 0; hearts = 3; tarotThisRun = 0; invuln = 0;
+    scroll = 0; speed = 300; elapsed = 0; coins = 0; hearts = 3; tarotThisRun = 0; invuln = 0; score = 0;
     obstacles = []; coinsField = []; effects = []; spawnTimer = 1.2; coinSpawnTimer = 1.8; tarotCooldown = 8 + Math.random() * 6;
     player.y = GROUND_Y; player.vy = 0; player.airborne = false; player.ducking = false;
     player.anim = 0; player.animTimer = 0; player.deadAnim = 0; player.hitFlash = 0;
     decos = [];
+    sinceDuckObstacle = 0;
     for (let i = 0; i < 6; i++) decos.push({ x: i * 300 + Math.random() * 150, img: images.deco[Math.floor(Math.random() * images.deco.length)] });
   }
 
@@ -176,18 +196,26 @@
   const loadingText = document.getElementById('loadingText');
   const pauseScreen = document.getElementById('pauseScreen');
   const gameOverScreen = document.getElementById('gameOverScreen');
-  const hud = document.getElementById('hud');
   const touchZones = document.getElementById('touchZones');
   const hint = document.getElementById('hint');
-  const coinCountEl = document.getElementById('coinCount');
-  const heartsPill = document.getElementById('heartsPill');
-  const tarotPill = document.getElementById('tarotPill');
   const finalScoreEl = document.getElementById('finalScore');
   const tarotNoteEl = document.getElementById('tarotNote');
 
   document.getElementById('retryBtn').addEventListener('click', () => goToMenu());
   document.getElementById('resumeBtn').addEventListener('click', () => togglePause());
-  document.getElementById('pauseBtn').addEventListener('click', () => togglePause());
+
+  // ---------- HUD (drawn on the canvas itself, sharing its coordinate space, so it
+  // scales pixel-perfectly with the canvas's CSS size instead of drifting as a
+  // separately-positioned DOM overlay) ----------
+  // Sizes/positions/spacing measured from the reference HUD screenshot.
+  const HUD = {
+    coin: { cx: 68, cy: 50, size: 54 },
+    coinTextX: 98,
+    card: { cx: 462, cy: 50, size: 46 },
+    heart: { cx: 528, cy: 50, size: 46 },
+    scoreRightX: 878,
+    pause: { cx: 910, cy: 50, size: 48 },
+  };
 
   // ---------- title screen (flower select + spit animation) ----------
   // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned
@@ -225,7 +253,6 @@
     flightActive = false; flightTimer = 0;
     gameOverScreen.hidden = true;
     pauseScreen.hidden = true;
-    hud.hidden = true;
     touchZones.hidden = true;
     hint.hidden = true;
   }
@@ -260,7 +287,6 @@
     state = 'playing';
     gameOverScreen.hidden = true;
     pauseScreen.hidden = true;
-    hud.hidden = false;
     touchZones.hidden = false;
     hint.hidden = false;
   }
@@ -272,7 +298,6 @@
 
   function endRun() {
     state = 'gameover';
-    hud.hidden = true;
     touchZones.hidden = true;
     hint.hidden = true;
     finalScoreEl.textContent = `Coins collected: ${coins}`;
@@ -330,8 +355,17 @@
   }
 
   function spawnObstacle() {
-    const keysArr = Object.keys(OBST_DEFS);
-    const type = keysArr[Math.floor(Math.random() * keysArr.length)];
+    // Force a healthy mix of jump- and duck-reactions instead of pure random picks,
+    // so a run never turns into "just hold jump" - every few obstacles a hang_rock
+    // shows up that can only be passed by ducking.
+    sinceDuckObstacle++;
+    let type;
+    if (sinceDuckObstacle >= 3 && Math.random() < 0.55) {
+      type = DUCK_TYPES[Math.floor(Math.random() * DUCK_TYPES.length)];
+      sinceDuckObstacle = 0;
+    } else {
+      type = JUMP_TYPES[Math.floor(Math.random() * JUMP_TYPES.length)];
+    }
     const def = OBST_DEFS[type];
     const o = { type, x: W + 60, w: def.w, h: def.h, def, hit: false };
     if (def.isPlant) { o.animName = 'blink_'; o.animIdx = 0; o.animTimer = 0; o.state = 'idle'; o.actionTimer = 0; }
@@ -417,12 +451,17 @@
       }
 
       if (!o.hit && !o.dead) {
-        const box = { x: o.x - o.w / 2, y: GROUND_Y - (o.def.isHole ? 4 : o.h), w: o.w, h: o.def.isHole ? 6 : o.h };
-        if (o.def.isHole) {
+        if (o.def.isOverhead) {
+          // hangs from the top of the screen down to clearBottom - only ducking
+          // (the player's short hitbox) passes underneath it.
+          const box = { x: o.x - o.w / 2, y: 0, w: o.w, h: o.def.clearBottom };
+          if (rectsOverlap(pBox, box)) { o.hit = true; hitPlayer(); }
+        } else if (o.def.isHole) {
           // fall in hole only if not airborne while over it
           const holeBox = { x: o.x - o.w / 2, y: GROUND_Y - 4, w: o.w, h: 8 };
           if (!player.airborne && rectsOverlap(pBox, holeBox)) { o.hit = true; hitPlayer(); }
         } else if (o.def.isPlant) {
+          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h, w: o.w, h: o.h };
           if (rectsOverlap(pBox, box)) {
             const stomping = player.airborne && player.vy > 100 && (pBox.y + pBox.h) < (box.y + box.h * 0.55);
             if (stomping && o.state === 'idle') {
@@ -430,16 +469,26 @@
               player.vy = JUMP_V * 0.55; player.airborne = true;
               coins += 1;
             } else if (o.state === 'idle') {
-              o.hit = true; o.state = 'eat'; o.animIdx = 0; o.animTimer = 0;
+              o.hit = true;
+              // the plant's big "eating" animation only plays on the hit that actually
+              // ends the run - a non-fatal bite just costs a heart with no fanfare.
+              const fatal = hearts <= 1;
+              if (fatal) { o.state = 'eat'; o.animIdx = 0; o.animTimer = 0; }
               hitPlayer();
             }
           }
         } else {
+          // small top-edge forgiveness on ground obstacles (rocks/tomato) so a jump
+          // that lands on the obstacle's flat top, grazing it, isn't a fail.
+          const forgive = 10;
+          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h + forgive, w: o.w, h: o.h - forgive };
           if (rectsOverlap(pBox, box)) { o.hit = true; hitPlayer(); }
         }
       }
     }
     obstacles = obstacles.filter(o => o.x > -150 && !o.dead);
+
+    if (state === 'playing') score = coins * 10 + Math.floor(elapsed * 20);
 
     // coins/tarot update + collection
     for (const c of coinsField) {
@@ -534,31 +583,36 @@
     ctx.drawImage(img, cx - targetW / 2, cy - targetH / 2, targetW, targetH);
   }
 
-  // One continuous arc from the flower straight to the runner's starting spot -
-  // shared by the 'spit' and 'landing' states so the character's motion never resets.
+  // The flower spits the character out toward screen-right first (a proper forward
+  // launch, matching the direction they'll be running), then the arc bends back to
+  // the runner's fixed starting spot so it lands straight into the track - a single
+  // rightward-bulging curve shared by the 'spit' and 'landing' states so the motion
+  // never resets or reverses direction on us.
   function flightPosition() {
     const f = FLOWER[spitChar];
     const t = Math.min(1, flightTimer / FLIGHT_DURATION);
     const startX = f.tapX, startY = f.tapY - 40;
     const endX = PLAYER_X, endY = GROUND_Y - 50;
-    const x = startX + (endX - startX) * t;
-    const y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 90;
+    const bulgeX = Math.max(startX, endX) + 210;
+    const bulgeY = Math.min(startY, endY) - 60;
+    const omt = 1 - t;
+    const x = omt * omt * startX + 2 * omt * t * bulgeX + t * t * endX;
+    const y = omt * omt * startY + 2 * omt * t * bulgeY + t * t * endY;
     return { x, y, t, startX, endX };
   }
 
-  // The art for both fly-portraits faces right; mirror it when the character is
-  // actually travelling left so it never looks like it's flying backward.
+  // Both fly-portraits (and the run-cycle they hand off to) face right by default -
+  // always draw them unmirrored so the character never looks like it's flying
+  // backward, no matter which way the arc briefly bends.
   function drawFlightCharacter(p) {
     const f = FLOWER[spitChar];
     const img = images[f.fly][0];
     if (!img || !img.complete || !img.naturalWidth) return;
     const targetW = 90 + p.t * 45;
     const targetH = targetW * (img.naturalHeight / img.naturalWidth);
-    const mirror = p.endX < p.startX;
     ctx.save();
     ctx.globalAlpha = Math.min(1, p.t * 4 + 0.15);
     ctx.translate(p.x, p.y);
-    if (mirror) ctx.scale(-1, 1);
     ctx.drawImage(img, -targetW / 2, -targetH / 2, targetW, targetH);
     ctx.restore();
   }
@@ -584,28 +638,34 @@
     const bg = images.title_bg[0];
     if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
 
-    // decorative rock/flower ledge, bottom-left corner
-    const stones = images.title_stones[0];
-    if (stones && stones.complete) {
-      const sw = 250, sh = sw * (stones.naturalHeight / stones.naturalWidth);
-      ctx.drawImage(stones, -14, H - sh + 8, sw, sh);
-    }
-
-    // idle flowers (both closed, resting pose = frame 0) unless one is mid-spit
+    // idle flowers (both closed, resting pose = frame 0) unless one is mid-spit -
+    // drawn BEFORE the rock ledge so the rock sits in front of the blue flower's
+    // stem base, giving the "flower emerges from behind the rock" look.
     drawFlowerFrame('c1', spitChar === 'c1' ? spitFrame : 0);
     drawFlowerFrame('c2', spitChar === 'c2' ? spitFrame : 0);
+
+    // decorative rock ledge, bottom-left corner - drawn on top of the flower stem
+    const stones = images.title_stones[0];
+    if (stones && stones.complete) {
+      const sw = 360, sh = sw * (stones.naturalHeight / stones.naturalWidth);
+      ctx.drawImage(stones, -20, 370, sw, sh);
+    }
 
     // logo banner, top-center
     drawCentered(images.title_logo[0], W / 2, 186, 460);
 
-    // MENU / STATS wooden signs, mounted on the post, bottom-right (decorative for now)
+    // MENU / STATS wooden signs, mounted on the post - the post is planted into the
+    // ground beyond the visible frame, so it's drawn bleeding off the bottom edge.
     const plank = images.title_plank[0];
+    let plankTop = H - 170;
     if (plank && plank.complete) {
-      const pw = 30, ph = pw * (plank.naturalHeight / plank.naturalWidth);
-      ctx.drawImage(plank, 788, H - ph - 30, pw, ph);
+      const pw = 36, ph = pw * (plank.naturalHeight / plank.naturalWidth);
+      plankTop = H - ph + 50;
+      ctx.drawImage(plank, 786, plankTop, pw, ph);
     }
-    drawCentered(images.title_stats[0], 878, H - 138, 150);
-    drawCentered(images.title_menu[0], 878, H - 80, 150);
+    const signCx = 804, signW = 168;
+    drawCentered(images.title_stats[0], signCx, plankTop + 62, signW);
+    drawCentered(images.title_menu[0], signCx, plankTop + 122, signW);
 
     if (state === 'menu') {
       drawCentered(images.title_tap[0], W / 2, H - 26, 340);
@@ -647,8 +707,25 @@
       }
       if (img && img.complete) {
         const h = o.h, w = o.w;
-        const drawY = o.def.isHole ? GROUND_Y - 6 : GROUND_Y - h;
-        ctx.drawImage(img, o.x - w / 2, drawY, w, h);
+        if (o.def.isOverhead) {
+          // a vine anchors it to the (unseen) canopy above so it doesn't look like
+          // it's floating in mid-air, then the rock hangs point-down off the end
+          const vineTop = 0, vineBottom = o.def.clearBottom - h + h * 0.18;
+          ctx.strokeStyle = '#4c7a2e';
+          ctx.lineWidth = 7;
+          ctx.beginPath();
+          ctx.moveTo(o.x, vineTop);
+          ctx.lineTo(o.x, vineBottom);
+          ctx.stroke();
+          ctx.save();
+          ctx.translate(o.x, o.def.clearBottom - h);
+          ctx.scale(1, -1);
+          ctx.drawImage(img, -w / 2, 0, w, h);
+          ctx.restore();
+        } else {
+          const drawY = o.def.isHole ? GROUND_Y - 6 : GROUND_Y - h;
+          ctx.drawImage(img, o.x - w / 2, drawY, w, h);
+        }
       }
     }
 
@@ -686,16 +763,61 @@
     }
     ctx.restore();
 
-    // HUD text
-    coinCountEl.textContent = coins;
-    if (heartsPill.childElementCount !== 3) {
-      heartsPill.innerHTML = '';
-      for (let i = 0; i < 3; i++) { const im = document.createElement('img'); im.src = 'assets/hud/heart.png'; heartsPill.appendChild(im); }
-    }
-    [...heartsPill.children].forEach((im, i) => { im.style.opacity = i < hearts ? '1' : '0.25'; });
-    tarotPill.hidden = tarotThisRun === 0;
-    if (tarotThisRun > 0) tarotPill.querySelector('span').textContent = tarotThisRun;
+    drawHUD();
   }
+
+  function drawIconCount(imgKey, cx, cy, size, text) {
+    const img = images[imgKey][0];
+    if (img && img.complete && img.naturalWidth) {
+      ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size);
+    }
+    ctx.font = "30px 'LuckiestGuy'";
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillStyle = '#fff';
+    const tx = cx + size / 2 + 8;
+    ctx.strokeText(text, tx, cy + 2);
+    ctx.fillText(text, tx, cy + 2);
+  }
+
+  // Sizes/positions/spacing match the reference HUD screenshot: coin+count top-left,
+  // card/heart counters centered, score + pause button top-right.
+  function drawHUD() {
+    drawIconCount('hud_coin', HUD.coin.cx, HUD.coin.cy, HUD.coin.size, 'x ' + coins);
+    drawIconCount('hud_card', HUD.card.cx, HUD.card.cy, HUD.card.size, String(tarotThisRun));
+    drawIconCount('hud_heart', HUD.heart.cx, HUD.heart.cy, HUD.heart.size, String(hearts));
+
+    ctx.font = "34px 'LuckiestGuy'";
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right';
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillStyle = '#ffe066';
+    ctx.strokeText(String(score), HUD.scoreRightX, HUD.pause.cy + 2);
+    ctx.fillText(String(score), HUD.scoreRightX, HUD.pause.cy + 2);
+    ctx.textAlign = 'left';
+
+    const pauseImg = images.hud_pause[0];
+    if (pauseImg && pauseImg.complete && pauseImg.naturalWidth) {
+      const s = HUD.pause.size;
+      ctx.drawImage(pauseImg, HUD.pause.cx - s / 2, HUD.pause.cy - s / 2, s, s);
+    }
+  }
+
+  // ---------- fullscreen "cover" scaling ----------
+  // Fills the whole screen (no letterboxing) by scaling to whichever dimension needs
+  // it more, cropping the canvas's top/bottom (or sides) evenly via #gameWrap's
+  // overflow:hidden - accepted tradeoff for filling the frame edge-to-edge.
+  function resizeCanvas() {
+    const scale = Math.max(window.innerWidth / W, window.innerHeight / H);
+    canvas.style.width = Math.ceil(W * scale) + 'px';
+    canvas.style.height = Math.ceil(H * scale) + 'px';
+  }
+  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('orientationchange', resizeCanvas);
+  resizeCanvas();
 
   // ---------- main loop ----------
   let last = performance.now();
@@ -717,5 +839,11 @@
   });
   loadingText.textContent = 'Loading...';
 
-  window.__debug = () => ({ state, hearts, coins, tarotThisRun, obstacles: obstacles.length, elapsed, spitFrame, flightActive, flightTimer });
+  window.__debug = () => ({ state, hearts, coins, score, tarotThisRun, obstacles: obstacles.length, elapsed, spitFrame, flightActive, flightTimer });
+  window.__forceSpawn = (type) => {
+    const def = OBST_DEFS[type];
+    const o = { type, x: W + 60, w: def.w, h: def.h, def, hit: false };
+    if (def.isPlant) { o.animName = 'blink_'; o.animIdx = 0; o.animTimer = 0; o.state = 'idle'; o.actionTimer = 0; }
+    obstacles.push(o);
+  };
 })();
