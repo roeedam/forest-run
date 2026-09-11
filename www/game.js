@@ -2,7 +2,18 @@
 (() => {
   const canvas = document.getElementById('gameCanvas');
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  // The canvas's internal width now matches the device's actual aspect ratio (clamped
+  // to a sane range) instead of a fixed 960x540, so filling the screen no longer means
+  // cropping the top/bottom off a narrower-than-device canvas - the canvas IS the
+  // screen shape, and resizeCanvas() below just scales it 1:1 into the viewport.
+  const H = 540;
+  const BASE_ASPECT = 960 / 540;   // 16:9-ish floor - never render narrower than this
+  const MAX_ASPECT = 2.4;          // covers the widest real phone screens (~21:9)
+  const viewportAspect = window.innerWidth / window.innerHeight;
+  const aspect = Math.max(BASE_ASPECT, Math.min(MAX_ASPECT, viewportAspect || BASE_ASPECT));
+  const W = Math.round(H * aspect);
+  canvas.width = W;
+  canvas.height = H;
   const GROUND_H = 90;
   const GROUND_Y = H - GROUND_H; // the line the character's feet stand on
 
@@ -39,12 +50,16 @@
     backback: ['assets/bg/backback.png'],
     frontback: ['assets/bg/frontback.png'],
     ground: ['assets/bg/ground.png'],
-    deco: ['assets/bg/bush002.png', 'assets/bg/bush003.png', 'assets/bg/bush004.png', 'assets/bg/bush005.png',
+    // Split into two pools per the LAYOUT reference art: most decorations are small
+    // ground-level accents, but every so often a giant showpiece mushroom/pumpkin
+    // (taller than the character by several multiples) anchors the scene, the way the
+    // reference screenshots do it - see deco_big usage in resetRun()/update().
+    deco_small: ['assets/bg/bush002.png', 'assets/bg/bush003.png', 'assets/bg/bush004.png', 'assets/bg/bush005.png',
            'assets/bg/mushroom001.png', 'assets/bg/mushroom002.png', 'assets/bg/mushroom003.png',
-           'assets/bg/mushroom004.png', 'assets/bg/mushroom005.png', 'assets/bg/mushroom007.png',
-           'assets/bg/mushroom008.png', 'assets/bg/mushroom009.png',
-           'assets/bg/pumpkin1.png', 'assets/bg/pumpkin2.png', 'assets/bg/pumpkin3.png',
-           'assets/bg/pumpkin4.png', 'assets/bg/pumpkin5.png'],
+           'assets/bg/mushroom004.png', 'assets/bg/mushroom005.png', 'assets/bg/mushroom009.png',
+           'assets/bg/pumpkin3.png', 'assets/bg/pumpkin5.png'],
+    deco_big: ['assets/bg/mushroom007.png', 'assets/bg/mushroom008.png',
+           'assets/bg/pumpkin1.png', 'assets/bg/pumpkin2.png', 'assets/bg/pumpkin4.png'],
     // obstacles
     rock1: ['assets/obstacles/rocks/rock_01.png'],
     rock2: ['assets/obstacles/rocks/rock_02.png'],
@@ -167,19 +182,36 @@
   // Ground obstacles: must be jumped over (or, for the hole, jumped across).
   // hang_rock is a low-hanging obstacle mounted near the top of the screen -
   // jumping into it hits it, only ducking clears it, so the run actually needs both inputs.
+  // groundOffsetFrac compensates for transparent padding baked into the bottom of
+  // each source PNG (measured directly from the art) so the visible rock/plant
+  // silhouette actually touches the ground instead of floating above it.
+  // scaleRange lets each spawn vary in size for visual variety; tomato's range is
+  // kept tight since it must stay jump-able.
   const OBST_DEFS = {
-    rock1: { img: 'rock1', w: 70, h: 62, gap: true, duck: false },
-    rock2: { img: 'rock2', w: 78, h: 66, gap: true, duck: false },
-    rock3: { img: 'rock3', w: 86, h: 74, gap: true, duck: false },
-    tomato: { img: 'tomato', w: 58, h: 58, gap: true, duck: false },
+    rock1: { img: 'rock1', w: 70, h: 62, gap: true, duck: false, groundOffsetFrac: 0.113, scaleRange: [0.85, 1.25] },
+    rock2: { img: 'rock2', w: 78, h: 66, gap: true, duck: false, groundOffsetFrac: 0.084, scaleRange: [0.85, 1.25] },
+    rock3: { img: 'rock3', w: 86, h: 74, gap: true, duck: false, groundOffsetFrac: 0.035, scaleRange: [0.85, 1.2] },
+    tomato: { img: 'tomato', w: 58, h: 58, gap: true, duck: false, groundOffsetFrac: 0.132, scaleRange: [0.9, 1.12] },
     hole: { img: 'hole', w: 110, h: 20, gap: true, isHole: true, duck: false },
-    plant: { img: 'plant_blink', w: 84, h: 84, gap: true, isPlant: true, duck: false },
-    hang_rock: { img: 'hang_rock', w: 84, h: 96, gap: true, isOverhead: true, duck: true, clearBottom: 392 },
+    plant: { img: 'plant_blink', w: 84, h: 84, gap: true, isPlant: true, duck: false, groundOffsetFrac: 0.057 },
+    hang_rock: { img: 'hang_rock', w: 84, h: 96, gap: true, isOverhead: true, duck: true, clearBottom: 392, scaleRange: [0.8, 1.3] },
   };
   const JUMP_TYPES = Object.keys(OBST_DEFS).filter(k => !OBST_DEFS[k].duck);
   const DUCK_TYPES = Object.keys(OBST_DEFS).filter(k => OBST_DEFS[k].duck);
 
   let sinceDuckObstacle = 0; // spawns since the last duck-required obstacle - forces variety
+
+  // Most decorations are small ground-level accents (bushes/mushrooms scattered for
+  // texture); every so often a giant showpiece mushroom or pumpkin appears, dwarfing
+  // the character, matching the scale seen in the LAYOUT reference art. avoidBig keeps
+  // two giants from landing back-to-back and crowding each other.
+  function pickDeco(x, avoidBig) {
+    const big = !avoidBig && Math.random() < 0.18;
+    const pool = big ? images.deco_big : images.deco_small;
+    const img = pool[Math.floor(Math.random() * pool.length)];
+    const dh = big ? (260 + Math.random() * 160) : (85 + Math.random() * 60);
+    return { x, img, dh, big };
+  }
 
   function resetRun() {
     scroll = 0; speed = 300; elapsed = 0; coins = 0; hearts = 3; tarotThisRun = 0; invuln = 0; score = 0;
@@ -188,7 +220,12 @@
     player.anim = 0; player.animTimer = 0; player.deadAnim = 0; player.hitFlash = 0;
     decos = [];
     sinceDuckObstacle = 0;
-    for (let i = 0; i < 6; i++) decos.push({ x: i * 300 + Math.random() * 150, img: images.deco[Math.floor(Math.random() * images.deco.length)] });
+    let lastBig = false;
+    for (let i = 0; i < 6; i++) {
+      const d = pickDeco(i * 320 + Math.random() * 180, lastBig);
+      decos.push(d);
+      lastBig = d.big;
+    }
   }
 
   // ---------- UI wiring ----------
@@ -208,38 +245,38 @@
   // scales pixel-perfectly with the canvas's CSS size instead of drifting as a
   // separately-positioned DOM overlay) ----------
   // Sizes/positions/spacing measured from the reference HUD screenshot.
+  // Right-anchored elements are expressed relative to W so they stay flush with the
+  // right edge of the screen at any device aspect ratio, instead of drifting inward
+  // (now-narrower gap) or off the edge (now-wider gap) like the old fixed 878/910 did.
   const HUD = {
     coin: { cx: 68, cy: 50, size: 54 },
     coinTextX: 98,
     card: { cx: 462, cy: 50, size: 46 },
     heart: { cx: 528, cy: 50, size: 46 },
-    scoreRightX: 878,
-    pause: { cx: 910, cy: 50, size: 48 },
+    scoreRightX: W - 82,
+    pause: { cx: W - 50, cy: 50, size: 48 },
   };
 
   // ---------- title screen (flower select + spit animation) ----------
-  // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned
-  // to align with the flower buds already painted into title_bg.jpg (measured from the source art).
-  // Positions match the reference screenshot: both flowers cluster left-of-center,
-  // blue lower, red just above and to the right of it.
+  // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned,
+  // left-anchored so they stay put near the rock ledge regardless of canvas width.
+  // Per Roee's reference: both flowers cluster tight against the left edge, tucked
+  // behind the rock ledge - blue lower and further left, red just above/right of it,
+  // its stem base also overlapping the rock.
   const FLOWER = {
-    c1: { frames: 'title_blue', ox: 112.6, oy: 192.3, w: 349.5, h: 299.4, tapX: 207, tapY: 388, fly: 'c1_fly' },
-    c2: { frames: 'title_red', ox: 296.9, oy: 151, w: 362.2, h: 310.6, tapX: 403, tapY: 346, fly: 'c2_fly' },
+    c1: { frames: 'title_blue', ox: 25, oy: 210, w: 349.5, h: 299.4, tapX: 119, tapY: 406, fly: 'c1_fly' },
+    c2: { frames: 'title_red', ox: 140, oy: 190, w: 362.2, h: 310.6, tapX: 246, tapY: 385, fly: 'c2_fly' },
   };
   const TAP_RADIUS = 65;
   const SPIT_FRAME_TIME = 1 / 24; // 24fps swing
-  // The flower stem swings down (loading) through frame ~18, then snaps/releases at
-  // frame 19 (the blurred whip-crack frame) - that's the true launch moment for both
-  // characters, verified frame-by-frame against the source animation.
-  const SPIT_PEAK_FRAME = 19;
   const SPIT_TOTAL_FRAMES = 30;
 
-  // The launched character flies continuously from the flower all the way to the
-  // runner's starting spot (no separate "fly to the logo" leg) so there's no cut in
-  // its motion; the background crossfades into the gameplay scene during the tail
-  // end of that same flight instead of hard-switching.
-  const FLIGHT_DURATION = 0.9; // seconds, starts the moment the flower releases
-  const BG_FADE_START = 0.5;   // fraction of the flight where the gameplay bg starts fading in
+  // Once the flower's swing animation finishes, the character flies in from just off
+  // the right edge of the screen all the way to the runner's starting spot, while the
+  // whole title scene pans out to the left in lockstep and the gameplay scene wipes in
+  // from the right to replace it - so the player experiences a real right-to-left flight
+  // across the full screen, landing exactly as the new scene finishes filling it.
+  const FLIGHT_DURATION = 0.85; // seconds, the full pan+flight duration
 
   let spitChar = null;   // 'c1' | 'c2' while playing the spit-out animation
   let spitFrame = 0;
@@ -367,7 +404,20 @@
       type = JUMP_TYPES[Math.floor(Math.random() * JUMP_TYPES.length)];
     }
     const def = OBST_DEFS[type];
-    const o = { type, x: W + 60, w: def.w, h: def.h, def, hit: false };
+    const scale = def.scaleRange ? (def.scaleRange[0] + Math.random() * (def.scaleRange[1] - def.scaleRange[0])) : 1;
+    const w = def.w * scale, h = def.h * scale;
+    // Coins and obstacles scroll at the identical world speed, so their relative x
+    // spacing at spawn time never changes - keeping this clear of any coin trail
+    // already in flight is enough to guarantee it stays clear forever.
+    let x = W + 60;
+    const margin = 26;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const left = x - w / 2 - margin, right = x + w / 2 + margin;
+      const blocked = coinsField.some(c => c.kind === 'coin' && c.x >= left && c.x <= right);
+      if (!blocked) break;
+      x += 70;
+    }
+    const o = { type, x, w, h, def, hit: false };
     if (def.isPlant) { o.animName = 'blink_'; o.animIdx = 0; o.animTimer = 0; o.state = 'idle'; o.actionTimer = 0; }
     obstacles.push(o);
   }
@@ -375,7 +425,20 @@
   function spawnCoins() {
     const pattern = Math.random() < 0.5 ? 'ground' : 'arc';
     const n = 3 + Math.floor(Math.random() * 3);
-    const baseX = W + 80;
+    let baseX = W + 80;
+    // Same reasoning as spawnObstacle: nudge the whole coin trail past any obstacle it
+    // would otherwise land on/inside, so a coin never spawns somewhere it can't be
+    // reached without hitting the thing it's sitting on.
+    const margin = 30;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const trailEnd = baseX + (n - 1) * 46;
+      const blocked = obstacles.some(o => {
+        const left = o.x - o.w / 2 - margin, right = o.x + o.w / 2 + margin;
+        return trailEnd >= left && baseX <= right;
+      });
+      if (!blocked) break;
+      baseX += 90;
+    }
     for (let i = 0; i < n; i++) {
       let y;
       if (pattern === 'ground') y = GROUND_Y - 40;
@@ -409,10 +472,12 @@
 
     // decorations scroll
     decos.forEach(d => { d.x -= speed * 0.5 * dt; });
-    decos = decos.filter(d => d.x > -400);
+    decos = decos.filter(d => d.x > -500);
     while (decos.length < 6) {
+      const lastD = decos[decos.length - 1];
       const last = decos.length ? Math.max(...decos.map(d => d.x)) : W;
-      decos.push({ x: last + 250 + Math.random() * 200, img: images.deco[Math.floor(Math.random() * images.deco.length)] });
+      const gap = 260 + Math.random() * 240 + (lastD && lastD.big ? 180 : 0);
+      decos.push(pickDeco(last + gap, lastD ? lastD.big : false));
     }
 
     // obstacle spawn
@@ -461,7 +526,8 @@
           const holeBox = { x: o.x - o.w / 2, y: GROUND_Y - 4, w: o.w, h: 8 };
           if (!player.airborne && rectsOverlap(pBox, holeBox)) { o.hit = true; hitPlayer(); }
         } else if (o.def.isPlant) {
-          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h, w: o.w, h: o.h };
+          const groundOffset = o.h * (o.def.groundOffsetFrac || 0);
+          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h + groundOffset, w: o.w, h: o.h };
           if (rectsOverlap(pBox, box)) {
             const stomping = player.airborne && player.vy > 100 && (pBox.y + pBox.h) < (box.y + box.h * 0.55);
             if (stomping && o.state === 'idle') {
@@ -480,8 +546,11 @@
         } else {
           // small top-edge forgiveness on ground obstacles (rocks/tomato) so a jump
           // that lands on the obstacle's flat top, grazing it, isn't a fail.
+          // groundOffset compensates for transparent padding baked into the art so the
+          // hitbox lines up with the obstacle's actual visible silhouette on the ground.
           const forgive = 10;
-          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h + forgive, w: o.w, h: o.h - forgive };
+          const groundOffset = o.h * (o.def.groundOffsetFrac || 0);
+          const box = { x: o.x - o.w / 2, y: GROUND_Y - o.h + groundOffset + forgive, w: o.w, h: o.h - forgive };
           if (rectsOverlap(pBox, box)) { o.hit = true; hitPlayer(); }
         }
       }
@@ -525,19 +594,19 @@
     if (spitTimer >= SPIT_FRAME_TIME) {
       spitTimer = 0;
       spitFrame++;
-      if (spitFrame >= SPIT_PEAK_FRAME && !flightActive) {
-        flightActive = true; // the flower just released - character starts flying now
-      }
       if (spitFrame >= SPIT_TOTAL_FRAMES) {
         spitFrame = SPIT_TOTAL_FRAMES;
-        state = 'landing'; // flower swing is done, but the character keeps flying -
-                            // no cut, it flies straight into the runner scene
+        // Flower swing is done - now the character flies in from the right edge of the
+        // screen while the whole scene pans/wipes left underneath it into gameplay.
+        state = 'landing';
+        flightActive = true;
+        flightTimer = 0;
       }
     }
   }
 
-  // Drives the character's single continuous flight from the flower to the runner's
-  // starting spot, spanning both the 'spit' and 'landing' states without a reset.
+  // Drives the character's right-to-left flight across the full screen during 'landing',
+  // in lockstep with the scene pan/wipe (see renderLanding).
   function updateFlight(dt) {
     if (!flightActive) return;
     flightTimer += dt;
@@ -583,36 +652,31 @@
     ctx.drawImage(img, cx - targetW / 2, cy - targetH / 2, targetW, targetH);
   }
 
-  // The flower spits the character out toward screen-right first (a proper forward
-  // launch, matching the direction they'll be running), then the arc bends back to
-  // the runner's fixed starting spot so it lands straight into the track - a single
-  // rightward-bulging curve shared by the 'spit' and 'landing' states so the motion
-  // never resets or reverses direction on us.
+  // The character flies straight across the screen from just off the right edge to the
+  // runner's fixed starting spot on the left - a real right-to-left crossing, not a
+  // local hop - eased so it comes in fast and settles into place as it lands.
   function flightPosition() {
-    const f = FLOWER[spitChar];
-    const t = Math.min(1, flightTimer / FLIGHT_DURATION);
-    const startX = f.tapX, startY = f.tapY - 40;
+    const rawT = Math.min(1, flightTimer / FLIGHT_DURATION);
+    const t = rawT * (2 - rawT); // ease-out
+    const startX = W + 60, startY = GROUND_Y - 90;
     const endX = PLAYER_X, endY = GROUND_Y - 50;
-    const bulgeX = Math.max(startX, endX) + 210;
-    const bulgeY = Math.min(startY, endY) - 60;
-    const omt = 1 - t;
-    const x = omt * omt * startX + 2 * omt * t * bulgeX + t * t * endX;
-    const y = omt * omt * startY + 2 * omt * t * bulgeY + t * t * endY;
-    return { x, y, t, startX, endX };
+    const x = startX + (endX - startX) * t;
+    const y = startY + (endY - startY) * t;
+    return { x, y, t, rawT };
   }
 
   // Both fly-portraits (and the run-cycle they hand off to) face right by default -
-  // always draw them unmirrored so the character never looks like it's flying
-  // backward, no matter which way the arc briefly bends.
+  // but the character is now flying screen-right to screen-left, so it must be mirrored
+  // to actually face the direction it's traveling.
   function drawFlightCharacter(p) {
     const f = FLOWER[spitChar];
     const img = images[f.fly][0];
     if (!img || !img.complete || !img.naturalWidth) return;
-    const targetW = 90 + p.t * 45;
+    const targetW = 85 + p.t * 55;
     const targetH = targetW * (img.naturalHeight / img.naturalWidth);
     ctx.save();
-    ctx.globalAlpha = Math.min(1, p.t * 4 + 0.15);
     ctx.translate(p.x, p.y);
+    ctx.scale(-1, 1);
     ctx.drawImage(img, -targetW / 2, -targetH / 2, targetW, targetH);
     ctx.restore();
   }
@@ -622,32 +686,39 @@
   function renderEnvironment(alpha = 1) {
     if (images.sky[0].complete) { ctx.globalAlpha = alpha; ctx.drawImage(images.sky[0], 0, 0, W, H); ctx.globalAlpha = 1; }
     drawTiled(images.backback[0], H - GROUND_H - 300, 300, scroll * 0.25, alpha);
+    drawTiled(images.frontback[0], H - GROUND_H - 160, 170, scroll * 0.55, alpha);
+    drawTiled(images.ground[0], GROUND_Y, GROUND_H, scroll, alpha);
+    // Decorations are drawn AFTER the ground tile (not before) so a decoration whose
+    // base sits flush with GROUND_Y - especially a big showpiece mushroom/pumpkin -
+    // actually reads as planted on top of the ground instead of having its base
+    // hidden behind the opaque dirt strip.
     decos.forEach(d => {
       if (d.img && d.img.complete && d.img.naturalWidth) {
-        const dh = 130, dw = d.img.naturalWidth * (dh / d.img.naturalHeight);
+        const dh = d.dh, dw = d.img.naturalWidth * (dh / d.img.naturalHeight);
         ctx.globalAlpha = alpha;
-        ctx.drawImage(d.img, d.x, GROUND_Y - dh + 20, dw, dh);
+        ctx.drawImage(d.img, d.x, GROUND_Y - dh, dw, dh);
         ctx.globalAlpha = 1;
       }
     });
-    drawTiled(images.frontback[0], H - GROUND_H - 160, 170, scroll * 0.55, alpha);
-    drawTiled(images.ground[0], GROUND_Y, GROUND_H, scroll, alpha);
   }
 
-  function renderTitle() {
+  // The title background + flowers + logo + signpost, with nothing panned - shared by
+  // the plain menu/spit screen and by the panned title layer during the landing wipe.
+  function renderTitleScene() {
     const bg = images.title_bg[0];
     if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
 
     // idle flowers (both closed, resting pose = frame 0) unless one is mid-spit -
-    // drawn BEFORE the rock ledge so the rock sits in front of the blue flower's
-    // stem base, giving the "flower emerges from behind the rock" look.
+    // drawn BEFORE the rock ledge so the rock sits in front of the flowers' stem
+    // bases, giving the "flowers emerge from behind the rock" look.
     drawFlowerFrame('c1', spitChar === 'c1' ? spitFrame : 0);
     drawFlowerFrame('c2', spitChar === 'c2' ? spitFrame : 0);
 
-    // decorative rock ledge, bottom-left corner - drawn on top of the flower stem
+    // decorative rock ledge, bottom-left corner - drawn on top of both flower stems
+    // (widened so it spans under blue AND red, per Roee's "both behind the rock" note)
     const stones = images.title_stones[0];
     if (stones && stones.complete) {
-      const sw = 360, sh = sw * (stones.naturalHeight / stones.naturalWidth);
+      const sw = 420, sh = sw * (stones.naturalHeight / stones.naturalWidth);
       ctx.drawImage(stones, -20, 370, sw, sh);
     }
 
@@ -656,37 +727,44 @@
 
     // MENU / STATS wooden signs, mounted on the post - the post is planted into the
     // ground beyond the visible frame, so it's drawn bleeding off the bottom edge.
+    const plankX = W - 174;
     const plank = images.title_plank[0];
     let plankTop = H - 170;
     if (plank && plank.complete) {
       const pw = 36, ph = pw * (plank.naturalHeight / plank.naturalWidth);
       plankTop = H - ph + 50;
-      ctx.drawImage(plank, 786, plankTop, pw, ph);
+      ctx.drawImage(plank, plankX, plankTop, pw, ph);
     }
-    const signCx = 804, signW = 168;
+    const signCx = W - 156, signW = 168;
     drawCentered(images.title_stats[0], signCx, plankTop + 62, signW);
     drawCentered(images.title_menu[0], signCx, plankTop + 122, signW);
+  }
 
+  function renderTitle() {
+    renderTitleScene();
     if (state === 'menu') {
       drawCentered(images.title_tap[0], W / 2, H - 26, 340);
     }
-
-    // character launching out of the flower at the whip-crack peak of the swing
-    // (drawn last so it's always fully visible, even flying in front of the logo)
-    if (spitChar && flightActive) {
-      drawFlightCharacter(flightPosition());
-    }
   }
 
-  // Flower swing just finished but the character is still mid-flight: keep the title
-  // background, fade the gameplay scene in underneath it, and keep flying the same
-  // continuous arc all the way down to the runner's spot - no hard scene cut.
+  // Flower swing just finished: the character flies in from the right while the whole
+  // title scene slides out to the left and the gameplay scene wipes in from the right
+  // to replace it, both driven by the same t as the flight - so the pan finishes and
+  // the runner scene fully fills the screen at the exact moment the character lands.
   function renderLanding() {
     const p = flightPosition();
-    const bg = images.title_bg[0];
-    if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
-    const bgFadeT = Math.max(0, Math.min(1, (p.t - BG_FADE_START) / (1 - BG_FADE_START)));
-    renderEnvironment(bgFadeT);
+    const panX = p.t * W;
+
+    ctx.save();
+    ctx.translate(-panX, 0);
+    renderTitleScene();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(W - panX, 0);
+    renderEnvironment(1);
+    ctx.restore();
+
     drawFlightCharacter(p);
   }
 
@@ -708,22 +786,18 @@
       if (img && img.complete) {
         const h = o.h, w = o.w;
         if (o.def.isOverhead) {
-          // a vine anchors it to the (unseen) canopy above so it doesn't look like
-          // it's floating in mid-air, then the rock hangs point-down off the end
-          const vineTop = 0, vineBottom = o.def.clearBottom - h + h * 0.18;
-          ctx.strokeStyle = '#4c7a2e';
-          ctx.lineWidth = 7;
-          ctx.beginPath();
-          ctx.moveTo(o.x, vineTop);
-          ctx.lineTo(o.x, vineBottom);
-          ctx.stroke();
+          // hangs point-down off the top of the screen, no visible vine/rope -
+          // just the rock itself, flipped so it reads as jutting down from above.
           ctx.save();
           ctx.translate(o.x, o.def.clearBottom - h);
           ctx.scale(1, -1);
           ctx.drawImage(img, -w / 2, 0, w, h);
           ctx.restore();
         } else {
-          const drawY = o.def.isHole ? GROUND_Y - 6 : GROUND_Y - h;
+          // groundOffset compensates for transparent padding baked into the bottom of
+          // the source art so the visible silhouette actually touches the ground.
+          const groundOffset = h * (o.def.groundOffsetFrac || 0);
+          const drawY = o.def.isHole ? GROUND_Y - 6 : GROUND_Y - h + groundOffset;
           ctx.drawImage(img, o.x - w / 2, drawY, w, h);
         }
       }
@@ -806,12 +880,12 @@
     }
   }
 
-  // ---------- fullscreen "cover" scaling ----------
-  // Fills the whole screen (no letterboxing) by scaling to whichever dimension needs
-  // it more, cropping the canvas's top/bottom (or sides) evenly via #gameWrap's
-  // overflow:hidden - accepted tradeoff for filling the frame edge-to-edge.
+  // ---------- fullscreen scaling ----------
+  // The canvas's internal width was already matched to the device aspect ratio at
+  // startup (see W/aspect above), so filling the screen is now a plain uniform scale
+  // by height - no cropping needed, the canvas shape already matches the viewport.
   function resizeCanvas() {
-    const scale = Math.max(window.innerWidth / W, window.innerHeight / H);
+    const scale = window.innerHeight / H;
     canvas.style.width = Math.ceil(W * scale) + 'px';
     canvas.style.height = Math.ceil(H * scale) + 'px';
   }
@@ -840,9 +914,10 @@
   loadingText.textContent = 'Loading...';
 
   window.__debug = () => ({ state, hearts, coins, score, tarotThisRun, obstacles: obstacles.length, elapsed, spitFrame, flightActive, flightTimer });
-  window.__forceSpawn = (type) => {
+  window.__forceSpawn = (type, atX) => {
     const def = OBST_DEFS[type];
-    const o = { type, x: W + 60, w: def.w, h: def.h, def, hit: false };
+    const scale = def.scaleRange ? (def.scaleRange[0] + Math.random() * (def.scaleRange[1] - def.scaleRange[0])) : 1;
+    const o = { type, x: atX != null ? atX : W + 60, w: def.w * scale, h: def.h * scale, def, hit: false };
     if (def.isPlant) { o.animName = 'blink_'; o.animIdx = 0; o.animTimer = 0; o.state = 'idle'; o.actionTimer = 0; }
     obstacles.push(o);
   };
