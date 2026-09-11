@@ -55,7 +55,13 @@
     title_blue: seq('assets/title/blue/f', 30),
     title_red: seq('assets/title/red/f', 30),
     c1_fly: ['assets/title/c1_fly.png'],
-    c2_fly: ['assets/title/c2_fly_temp.png'],
+    c2_fly: ['assets/title/c2_fly.png'],
+    title_logo: ['assets/title/logo.png'],
+    title_tap: ['assets/title/tap_a_flower.png'],
+    title_menu: ['assets/title/menu_sign.png'],
+    title_stats: ['assets/title/stats_sign.png'],
+    title_plank: ['assets/title/plank.png'],
+    title_stones: ['assets/title/stones.png'],
   };
 
   let totalCount = 0, loadedCount = 0;
@@ -83,14 +89,34 @@
     if (e.code === 'Space' || e.code === 'ArrowUp') keys.jump = false;
     if (e.code === 'ArrowDown') keys.duck = false;
   });
-  const zoneJump = document.getElementById('zoneJump');
-  const zoneDuck = document.getElementById('zoneDuck');
-  zoneJump.addEventListener('pointerdown', e => { e.preventDefault(); keys.jump = true; });
-  zoneJump.addEventListener('pointerup', () => keys.jump = false);
-  zoneJump.addEventListener('pointercancel', () => keys.jump = false);
-  zoneDuck.addEventListener('pointerdown', e => { e.preventDefault(); keys.duck = true; });
-  zoneDuck.addEventListener('pointerup', () => keys.duck = false);
-  zoneDuck.addEventListener('pointercancel', () => keys.duck = false);
+  // Swipe controls during gameplay: swipe up = jump, swipe down = duck (briefly).
+  // Anywhere on the touch area works - no more left/right split zones.
+  const touchZonesEl = document.getElementById('touchZones');
+  const SWIPE_THRESHOLD = 26; // px
+  let swipeActive = false, swipeStartX = 0, swipeStartY = 0;
+  let touchDuckTimer = 0; // seconds remaining to force a duck pose from a swipe-down
+
+  touchZonesEl.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    swipeActive = true;
+    swipeStartX = e.clientX;
+    swipeStartY = e.clientY;
+  });
+  touchZonesEl.addEventListener('pointerup', e => {
+    if (!swipeActive) return;
+    swipeActive = false;
+    const dx = e.clientX - swipeStartX, dy = e.clientY - swipeStartY;
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > SWIPE_THRESHOLD) {
+      if (dy < 0) {
+        // swipe up -> jump
+        if (!player.airborne) { player.airborne = true; player.vy = JUMP_V; }
+      } else {
+        // swipe down -> duck for a short moment
+        touchDuckTimer = 0.45;
+      }
+    }
+  });
+  touchZonesEl.addEventListener('pointercancel', () => { swipeActive = false; });
 
   // ---------- game state ----------
   const GRAVITY = 2400;
@@ -167,10 +193,10 @@
   // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned
   // to align with the flower buds already painted into title_bg.jpg (measured from the source art).
   const FLOWER = {
-    c1: { frames: 'title_blue', ox: -21, oy: 44, w: 657, h: 563, tapX: 246, tapY: 358, fly: 'c1_fly' },
-    c2: { frames: 'title_red', ox: 25, oy: 37, w: 821, h: 704, tapX: 388, tapY: 424, fly: 'c2_fly' },
+    c1: { frames: 'title_blue', ox: 229.7, oy: 274.4, w: 260, h: 222.8, tapX: 300, tapY: 420, fly: 'c1_fly' },
+    c2: { frames: 'title_red', ox: 552.1, oy: 258.5, w: 300, h: 257.2, tapX: 640, tapY: 420, fly: 'c2_fly' },
   };
-  const TAP_RADIUS = 100;
+  const TAP_RADIUS = 85;
   const SPIT_FRAME_TIME = 1 / 24; // 24fps swing
   const SPIT_PEAK_FRAME = 11; // matches the whip-crack peak in the source animation
   const SPIT_TOTAL_FRAMES = 30;
@@ -239,7 +265,8 @@
 
   // ---------- update ----------
   function updatePlayer(dt) {
-    const wantDuck = keys.duck && !player.airborne;
+    if (touchDuckTimer > 0) touchDuckTimer -= dt;
+    const wantDuck = (keys.duck || touchDuckTimer > 0) && !player.airborne;
     player.ducking = wantDuck;
 
     if (keys.jump && !player.airborne) {
@@ -469,49 +496,60 @@
     if (img && img.complete) ctx.drawImage(img, f.ox, f.oy, f.w, f.h);
   }
 
+  function drawCentered(img, cx, cy, targetW) {
+    if (!img || !img.complete || !img.naturalWidth) return;
+    const targetH = targetW * (img.naturalHeight / img.naturalWidth);
+    ctx.drawImage(img, cx - targetW / 2, cy - targetH / 2, targetW, targetH);
+  }
+
   function renderTitle() {
     const bg = images.title_bg[0];
     if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
+
+    // decorative rock/flower ledge, bottom-left corner
+    const stones = images.title_stones[0];
+    if (stones && stones.complete) {
+      const sw = 250, sh = sw * (stones.naturalHeight / stones.naturalWidth);
+      ctx.drawImage(stones, -14, H - sh + 8, sw, sh);
+    }
 
     // idle flowers (both closed, resting pose = frame 0) unless one is mid-spit
     drawFlowerFrame('c1', spitChar === 'c1' ? spitFrame : 0);
     drawFlowerFrame('c2', spitChar === 'c2' ? spitFrame : 0);
 
+    // logo banner, top-center
+    drawCentered(images.title_logo[0], W / 2, 186, 460);
+
+    // MENU / STATS wooden signs, mounted on the post, bottom-right (decorative for now)
+    const plank = images.title_plank[0];
+    if (plank && plank.complete) {
+      const pw = 30, ph = pw * (plank.naturalHeight / plank.naturalWidth);
+      ctx.drawImage(plank, 788, H - ph - 30, pw, ph);
+    }
+    drawCentered(images.title_stats[0], 878, H - 138, 150);
+    drawCentered(images.title_menu[0], 878, H - 80, 150);
+
+    if (state === 'menu') {
+      drawCentered(images.title_tap[0], W / 2, H - 26, 340);
+    }
+
     // character launching out of the flower at the whip-crack peak of the swing
+    // (drawn last so it's always fully visible, even flying in front of the logo)
     if (spitChar && spitFrame >= SPIT_PEAK_FRAME) {
       const f = FLOWER[spitChar];
       const t = Math.min(1, (spitFrame - SPIT_PEAK_FRAME) / (SPIT_TOTAL_FRAMES - SPIT_PEAK_FRAME));
       const startX = f.tapX, startY = f.tapY - 40;
-      const endX = W * 0.5, endY = H * 0.28;
+      const endX = W * 0.5, endY = H * 0.4;
       const x = startX + (endX - startX) * t;
       const y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 70;
       const img = images[f.fly][0];
       if (img && img.complete) {
-        const targetW = 90 + t * 40;
-        const targetH = targetW * (img.naturalHeight / img.naturalWidth);
         ctx.save();
         ctx.globalAlpha = Math.min(1, t * 3);
-        ctx.drawImage(img, x - targetW / 2, y - targetH / 2, targetW, targetH);
+        drawCentered(img, x, y, 90 + t * 40);
         ctx.restore();
       }
     }
-
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffe066';
-    ctx.strokeStyle = 'rgba(10,40,25,0.55)';
-    ctx.lineWidth = 6;
-    ctx.font = "54px 'LuckiestGuy'";
-    ctx.strokeText('FOREST RUN', W / 2, 78);
-    ctx.fillText('FOREST RUN', W / 2, 78);
-    if (state === 'menu') {
-      ctx.font = "18px 'LuckiestGuy'";
-      ctx.fillStyle = '#fff';
-      ctx.lineWidth = 4;
-      ctx.strokeText('TAP A FLOWER TO START', W / 2, H - 26);
-      ctx.fillText('TAP A FLOWER TO START', W / 2, H - 26);
-    }
-    ctx.restore();
   }
 
   function render() {
