@@ -192,22 +192,37 @@
   // ---------- title screen (flower select + spit animation) ----------
   // Blue flower (Elfi) and red flower (Lyra) frame canvases are pre-scaled/pre-positioned
   // to align with the flower buds already painted into title_bg.jpg (measured from the source art).
+  // Positions match the reference screenshot: both flowers cluster left-of-center,
+  // blue lower, red just above and to the right of it.
   const FLOWER = {
-    c1: { frames: 'title_blue', ox: 229.7, oy: 274.4, w: 260, h: 222.8, tapX: 300, tapY: 420, fly: 'c1_fly' },
-    c2: { frames: 'title_red', ox: 552.1, oy: 258.5, w: 300, h: 257.2, tapX: 640, tapY: 420, fly: 'c2_fly' },
+    c1: { frames: 'title_blue', ox: 112.6, oy: 192.3, w: 349.5, h: 299.4, tapX: 207, tapY: 388, fly: 'c1_fly' },
+    c2: { frames: 'title_red', ox: 296.9, oy: 151, w: 362.2, h: 310.6, tapX: 403, tapY: 346, fly: 'c2_fly' },
   };
-  const TAP_RADIUS = 85;
+  const TAP_RADIUS = 65;
   const SPIT_FRAME_TIME = 1 / 24; // 24fps swing
-  const SPIT_PEAK_FRAME = 11; // matches the whip-crack peak in the source animation
+  // The flower stem swings down (loading) through frame ~18, then snaps/releases at
+  // frame 19 (the blurred whip-crack frame) - that's the true launch moment for both
+  // characters, verified frame-by-frame against the source animation.
+  const SPIT_PEAK_FRAME = 19;
   const SPIT_TOTAL_FRAMES = 30;
+
+  // The launched character flies continuously from the flower all the way to the
+  // runner's starting spot (no separate "fly to the logo" leg) so there's no cut in
+  // its motion; the background crossfades into the gameplay scene during the tail
+  // end of that same flight instead of hard-switching.
+  const FLIGHT_DURATION = 0.9; // seconds, starts the moment the flower releases
+  const BG_FADE_START = 0.5;   // fraction of the flight where the gameplay bg starts fading in
 
   let spitChar = null;   // 'c1' | 'c2' while playing the spit-out animation
   let spitFrame = 0;
   let spitTimer = 0;
+  let flightActive = false;
+  let flightTimer = 0;
 
   function goToMenu() {
     state = 'menu';
     spitChar = null; spitFrame = 0; spitTimer = 0;
+    flightActive = false; flightTimer = 0;
     gameOverScreen.hidden = true;
     pauseScreen.hidden = true;
     hud.hidden = true;
@@ -232,6 +247,8 @@
         spitChar = key;
         spitFrame = 0;
         spitTimer = 0;
+        flightActive = false;
+        flightTimer = 0;
         state = 'spit';
         return;
       }
@@ -459,9 +476,24 @@
     if (spitTimer >= SPIT_FRAME_TIME) {
       spitTimer = 0;
       spitFrame++;
-      if (spitFrame >= SPIT_TOTAL_FRAMES) {
-        startGame();
+      if (spitFrame >= SPIT_PEAK_FRAME && !flightActive) {
+        flightActive = true; // the flower just released - character starts flying now
       }
+      if (spitFrame >= SPIT_TOTAL_FRAMES) {
+        spitFrame = SPIT_TOTAL_FRAMES;
+        state = 'landing'; // flower swing is done, but the character keeps flying -
+                            // no cut, it flies straight into the runner scene
+      }
+    }
+  }
+
+  // Drives the character's single continuous flight from the flower to the runner's
+  // starting spot, spanning both the 'spit' and 'landing' states without a reset.
+  function updateFlight(dt) {
+    if (!flightActive) return;
+    flightTimer += dt;
+    if (state === 'landing' && flightTimer >= FLIGHT_DURATION) {
+      startGame();
     }
   }
 
@@ -502,6 +534,52 @@
     ctx.drawImage(img, cx - targetW / 2, cy - targetH / 2, targetW, targetH);
   }
 
+  // One continuous arc from the flower straight to the runner's starting spot -
+  // shared by the 'spit' and 'landing' states so the character's motion never resets.
+  function flightPosition() {
+    const f = FLOWER[spitChar];
+    const t = Math.min(1, flightTimer / FLIGHT_DURATION);
+    const startX = f.tapX, startY = f.tapY - 40;
+    const endX = PLAYER_X, endY = GROUND_Y - 50;
+    const x = startX + (endX - startX) * t;
+    const y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 90;
+    return { x, y, t, startX, endX };
+  }
+
+  // The art for both fly-portraits faces right; mirror it when the character is
+  // actually travelling left so it never looks like it's flying backward.
+  function drawFlightCharacter(p) {
+    const f = FLOWER[spitChar];
+    const img = images[f.fly][0];
+    if (!img || !img.complete || !img.naturalWidth) return;
+    const targetW = 90 + p.t * 45;
+    const targetH = targetW * (img.naturalHeight / img.naturalWidth);
+    const mirror = p.endX < p.startX;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, p.t * 4 + 0.15);
+    ctx.translate(p.x, p.y);
+    if (mirror) ctx.scale(-1, 1);
+    ctx.drawImage(img, -targetW / 2, -targetH / 2, targetW, targetH);
+    ctx.restore();
+  }
+
+  // Gameplay parallax layers, factored out so the landing crossfade can paint them
+  // at a rising alpha over the title background instead of cutting to them.
+  function renderEnvironment(alpha = 1) {
+    if (images.sky[0].complete) { ctx.globalAlpha = alpha; ctx.drawImage(images.sky[0], 0, 0, W, H); ctx.globalAlpha = 1; }
+    drawTiled(images.backback[0], H - GROUND_H - 300, 300, scroll * 0.25, alpha);
+    decos.forEach(d => {
+      if (d.img && d.img.complete && d.img.naturalWidth) {
+        const dh = 130, dw = d.img.naturalWidth * (dh / d.img.naturalHeight);
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(d.img, d.x, GROUND_Y - dh + 20, dw, dh);
+        ctx.globalAlpha = 1;
+      }
+    });
+    drawTiled(images.frontback[0], H - GROUND_H - 160, 170, scroll * 0.55, alpha);
+    drawTiled(images.ground[0], GROUND_Y, GROUND_H, scroll, alpha);
+  }
+
   function renderTitle() {
     const bg = images.title_bg[0];
     if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
@@ -535,39 +613,28 @@
 
     // character launching out of the flower at the whip-crack peak of the swing
     // (drawn last so it's always fully visible, even flying in front of the logo)
-    if (spitChar && spitFrame >= SPIT_PEAK_FRAME) {
-      const f = FLOWER[spitChar];
-      const t = Math.min(1, (spitFrame - SPIT_PEAK_FRAME) / (SPIT_TOTAL_FRAMES - SPIT_PEAK_FRAME));
-      const startX = f.tapX, startY = f.tapY - 40;
-      const endX = W * 0.5, endY = H * 0.4;
-      const x = startX + (endX - startX) * t;
-      const y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 70;
-      const img = images[f.fly][0];
-      if (img && img.complete) {
-        ctx.save();
-        ctx.globalAlpha = Math.min(1, t * 3);
-        drawCentered(img, x, y, 90 + t * 40);
-        ctx.restore();
-      }
+    if (spitChar && flightActive) {
+      drawFlightCharacter(flightPosition());
     }
+  }
+
+  // Flower swing just finished but the character is still mid-flight: keep the title
+  // background, fade the gameplay scene in underneath it, and keep flying the same
+  // continuous arc all the way down to the runner's spot - no hard scene cut.
+  function renderLanding() {
+    const p = flightPosition();
+    const bg = images.title_bg[0];
+    if (bg && bg.complete) ctx.drawImage(bg, 0, 0, W, H);
+    const bgFadeT = Math.max(0, Math.min(1, (p.t - BG_FADE_START) / (1 - BG_FADE_START)));
+    renderEnvironment(bgFadeT);
+    drawFlightCharacter(p);
   }
 
   function render() {
     ctx.clearRect(0, 0, W, H);
     if (state === 'menu' || state === 'spit') { renderTitle(); return; }
-    // sky
-    if (images.sky[0].complete) ctx.drawImage(images.sky[0], 0, 0, W, H);
-    // parallax layers
-    drawTiled(images.backback[0], H - GROUND_H - 300, 300, scroll * 0.25);
-    // decorations (between backback and frontback)
-    decos.forEach(d => {
-      if (d.img && d.img.complete && d.img.naturalWidth) {
-        const dh = 130, dw = d.img.naturalWidth * (dh / d.img.naturalHeight);
-        ctx.drawImage(d.img, d.x, GROUND_Y - dh + 20, dw, dh);
-      }
-    });
-    drawTiled(images.frontback[0], H - GROUND_H - 160, 170, scroll * 0.55);
-    drawTiled(images.ground[0], GROUND_Y, GROUND_H, scroll);
+    if (state === 'landing') { renderLanding(); return; }
+    renderEnvironment(1);
 
     // obstacles
     for (const o of obstacles) {
@@ -638,6 +705,7 @@
     if (state === 'playing') update(dt);
     if (state === 'dead') updateDead(dt);
     if (state === 'spit') updateSpit(dt);
+    if (state === 'spit' || state === 'landing') updateFlight(dt);
     render();
     requestAnimationFrame(loop);
   }
@@ -649,5 +717,5 @@
   });
   loadingText.textContent = 'Loading...';
 
-  window.__debug = () => ({ state, hearts, coins, tarotThisRun, obstacles: obstacles.length, elapsed });
+  window.__debug = () => ({ state, hearts, coins, tarotThisRun, obstacles: obstacles.length, elapsed, spitFrame, flightActive, flightTimer });
 })();
